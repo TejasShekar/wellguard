@@ -1,9 +1,9 @@
 /**
- * WellGuard — scratch validation harness for Milestone 1A-part-2.
+ * WellGuard — scratch validation harness.
  * Real UI lands in Milestone 1E and will replace this file.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Pressable,
   ScrollView,
@@ -18,15 +18,20 @@ import {
 } from 'react-native-safe-area-context';
 
 import DevicePolicy from './src/modules/DevicePolicy';
+import TimerService from './src/modules/TimerService';
 
 const TARGET_PACKAGE = 'com.android.chrome';
+const CYCLE_USE_MIN = 0.2; // 12s — dev-friendly for emulator testing
+const CYCLE_FREEZE_MIN = 0.2;
 
 type DeviceOwnerStatus = 'unknown' | 'yes' | 'no';
 
 function App() {
   const [ownerStatus, setOwnerStatus] = useState<DeviceOwnerStatus>('unknown');
   const [lastAction, setLastAction] = useState<string>('—');
+  const [cycleRunning, setCycleRunning] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const checkDeviceOwner = useCallback(async () => {
     setError(null);
@@ -56,23 +61,65 @@ function App() {
     }
   }, []);
 
+  const startCycle = useCallback(async () => {
+    setError(null);
+    try {
+      await TimerService.startCycle(
+        TARGET_PACKAGE,
+        CYCLE_USE_MIN,
+        CYCLE_FREEZE_MIN,
+      );
+      setLastAction(
+        `startCycle(${TARGET_PACKAGE}, use=${CYCLE_USE_MIN}min, freeze=${CYCLE_FREEZE_MIN}min)`,
+      );
+    } catch (e) {
+      setError(`startCycle failed: ${String(e)}`);
+    }
+  }, []);
+
+  const stopCycle = useCallback(async () => {
+    setError(null);
+    try {
+      await TimerService.stopCycle(TARGET_PACKAGE);
+      setLastAction(`stopCycle(${TARGET_PACKAGE})`);
+    } catch (e) {
+      setError(`stopCycle failed: ${String(e)}`);
+    }
+  }, []);
+
+  // Initial status check.
   useEffect(() => {
     checkDeviceOwner();
   }, [checkDeviceOwner]);
+
+  // Poll cycle status every second.
+  useEffect(() => {
+    const tick = async () => {
+      try {
+        const running = await TimerService.isRunning(TARGET_PACKAGE);
+        setCycleRunning(running);
+      } catch {
+        // swallow — polling errors shouldn't spam the UI
+      }
+    };
+    tick();
+    pollRef.current = setInterval(tick, 1000);
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, []);
 
   return (
     <SafeAreaProvider>
       <StatusBar barStyle="dark-content" />
       <SafeAreaView style={styles.container}>
         <ScrollView contentContainerStyle={styles.content}>
-          <Text style={styles.title}>WellGuard · 1A-part-2 harness</Text>
+          <Text style={styles.title}>WellGuard · harness</Text>
 
           <View style={styles.card}>
             <Text style={styles.label}>Device Owner</Text>
             <Text style={styles.value}>{ownerStatus}</Text>
-            <Pressable
-              style={styles.button}
-              onPress={checkDeviceOwner}>
+            <Pressable style={styles.button} onPress={checkDeviceOwner}>
               <Text style={styles.buttonText}>Re-check</Text>
             </Pressable>
           </View>
@@ -90,6 +137,27 @@ function App() {
                 style={[styles.button, styles.unblock]}
                 onPress={() => setSuspended(false)}>
                 <Text style={styles.buttonText}>Unblock</Text>
+              </Pressable>
+            </View>
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.label}>
+              Cycle (use {CYCLE_USE_MIN}min / freeze {CYCLE_FREEZE_MIN}min)
+            </Text>
+            <Text style={styles.value}>
+              {cycleRunning ? 'running' : 'stopped'}
+            </Text>
+            <View style={styles.row}>
+              <Pressable
+                style={[styles.button, styles.unblock]}
+                onPress={startCycle}>
+                <Text style={styles.buttonText}>Start</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.button, styles.block]}
+                onPress={stopCycle}>
+                <Text style={styles.buttonText}>Stop</Text>
               </Pressable>
             </View>
           </View>
