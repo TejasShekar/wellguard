@@ -35,6 +35,7 @@ class TimerForegroundService : Service() {
 
   private val handler = Handler(Looper.getMainLooper())
   private val pendingTransitions = mutableMapOf<String, Runnable>()
+  private val pendingWarnings = mutableMapOf<String, Runnable>()
 
   private lateinit var store: CycleStateStore
   private lateinit var dpm: DevicePolicyManager
@@ -89,6 +90,8 @@ class TimerForegroundService : Service() {
   override fun onDestroy() {
     pendingTransitions.values.forEach { handler.removeCallbacks(it) }
     pendingTransitions.clear()
+    pendingWarnings.values.forEach { handler.removeCallbacks(it) }
+    pendingWarnings.clear()
     super.onDestroy()
   }
 
@@ -199,12 +202,58 @@ class TimerForegroundService : Service() {
     } else {
       alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, state.phaseEndsAt, pi)
     }
+
+    // Warning: fire a heads-up notification shortly before USE→FREEZE so the
+    // user can save in-progress work. Skip if phase is too short (dev cycles)
+    // or if the phase is FREEZE (unfreezing is not lossy).
+    if (state.phase == CycleState.Phase.USE) {
+      scheduleFreezeWarning(state)
+    }
+  }
+
+  private fun scheduleFreezeWarning(state: CycleState) {
+    val phaseDurationMs = state.phaseEndsAt - state.phaseStartedAt
+    // Skip only if the phase is shorter than the lead — otherwise the warning
+    // would fire before or at the same moment the phase started.
+    if (phaseDurationMs <= WARNING_LEAD_MS) {
+      Log.i(TAG, "skipping freeze warning (phase=${phaseDurationMs}ms <= lead=${WARNING_LEAD_MS}ms)")
+      return
+    }
+
+    val warnAt = state.phaseEndsAt - WARNING_LEAD_MS
+    val delay = (warnAt - System.currentTimeMillis()).coerceAtLeast(0L)
+    Log.i(TAG, "scheduled freeze warning for ${state.packageName} in ${delay}ms")
+    val warning = Runnable { showFreezeWarning(state.packageName) }
+    handler.postDelayed(warning, delay)
+    pendingWarnings[state.packageName] = warning
+  }
+
+  private fun showFreezeWarning(packageName: String) {
+    Log.i(TAG, "firing freeze warning for $packageName")
+    val seconds = WARNING_LEAD_MS / 1000
+    val notification = NotificationCompat.Builder(this, WARNING_CHANNEL_ID)
+      .setContentTitle("WellGuard")
+      .setContentText("$packageName freezes in ${seconds}s — save your work")
+      .setSmallIcon(R.mipmap.ic_launcher)
+      .setPriority(NotificationCompat.PRIORITY_HIGH)
+      .setCategory(NotificationCompat.CATEGORY_REMINDER)
+      .setAutoCancel(true)
+      .setTimeoutAfter(WARNING_LEAD_MS)
+      .build()
+    getSystemService(NotificationManager::class.java)
+      .notify(warningNotificationId(packageName), notification)
   }
 
   private fun cancelScheduled(packageName: String) {
     pendingTransitions.remove(packageName)?.let { handler.removeCallbacks(it) }
     alarmManager.cancel(transitionPendingIntent(packageName))
+    pendingWarnings.remove(packageName)?.let { handler.removeCallbacks(it) }
+    getSystemService(NotificationManager::class.java)
+      .cancel(warningNotificationId(packageName))
   }
+
+  private fun warningNotificationId(packageName: String): Int =
+    WARNING_NOTIFICATION_BASE + (packageName.hashCode() and 0x7FFF)
 
   private fun transitionPendingIntent(packageName: String): PendingIntent {
     val intent = Intent(this, TimerForegroundService::class.java).apply {
@@ -228,6 +277,17 @@ class TimerForegroundService : Service() {
       mgr.createNotificationChannel(
         NotificationChannel(CHANNEL_ID, "WellGuard cycle", NotificationManager.IMPORTANCE_LOW)
           .apply { description = "Persistent notification while a cycle is running" }
+      )
+    }
+    if (mgr.getNotificationChannel(WARNING_CHANNEL_ID) == null) {
+      mgr.createNotificationChannel(
+        NotificationChannel(
+          WARNING_CHANNEL_ID,
+          "Freeze warnings",
+          NotificationManager.IMPORTANCE_HIGH,
+        ).apply {
+          description = "Heads-up alert shortly before an app is about to freeze"
+        }
       )
     }
   }
@@ -259,9 +319,12 @@ class TimerForegroundService : Service() {
   companion object {
     private const val TAG = "WellGuardTimer"
     private const val CHANNEL_ID = "wellguard_timer"
+    private const val WARNING_CHANNEL_ID = "wellguard_warnings"
     private const val NOTIFICATION_ID = 9101
+    private const val WARNING_NOTIFICATION_BASE = 9200
     private const val MS_PER_MINUTE = 60_000L
     private const val TRANSITION_SLOP_MS = 500L
+    private const val WARNING_LEAD_MS = 10_000L
     private const val DEFAULT_USE_MIN = 10.0
     private const val DEFAULT_FREEZE_MIN = 60.0
 

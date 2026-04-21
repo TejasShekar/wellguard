@@ -21,8 +21,8 @@ import DevicePolicy from './src/modules/DevicePolicy';
 import TimerService from './src/modules/TimerService';
 
 const TARGET_PACKAGE = 'com.android.chrome';
-const CYCLE_USE_MIN = 0.2; // 12s — dev-friendly for emulator testing
-const CYCLE_FREEZE_MIN = 0.2;
+const CYCLE_USE_MIN = 0.333; // 20s — dev-friendly for emulator testing
+const CYCLE_FREEZE_MIN = 0.333;
 
 type DeviceOwnerStatus = 'unknown' | 'yes' | 'no';
 
