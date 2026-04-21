@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "android": "react-native run-android",
+    "dev": "./scripts/dev.sh",
     "lint": "eslint .",
     "start": "react-native start",
     "test": "jest"
