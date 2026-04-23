@@ -1,6 +1,10 @@
 package com.wellguard.modules
 
+import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.core.content.ContextCompat
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
@@ -13,6 +17,8 @@ class TimerServiceModule(reactContext: ReactApplicationContext) :
 
   private val ctx get() = reactApplicationContext
   private val store by lazy { CycleStateStore(ctx) }
+  private val powerManager
+    get() = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
 
   override fun startCycle(
     packageName: String,
@@ -50,5 +56,22 @@ class TimerServiceModule(reactContext: ReactApplicationContext) :
   override fun isRunning(packageName: String, promise: Promise) {
     val state = store.load(packageName)
     promise.resolve(state != null && state.phase != CycleState.Phase.IDLE)
+  }
+
+  override fun isIgnoringBatteryOptimizations(promise: Promise) {
+    promise.resolve(powerManager.isIgnoringBatteryOptimizations(ctx.packageName))
+  }
+
+  override fun requestIgnoreBatteryOptimizations(promise: Promise) {
+    try {
+      val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+        data = Uri.parse("package:${ctx.packageName}")
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      }
+      ctx.startActivity(intent)
+      promise.resolve(null)
+    } catch (e: Exception) {
+      promise.reject("REQUEST_BATTERY_OPT_FAILED", e.message, e)
+    }
   }
 }

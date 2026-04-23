@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AppState,
   FlatList,
+  Linking,
   Modal,
   PermissionsAndroid,
   Platform,
@@ -39,17 +40,32 @@ type Gate = {
   deviceOwner: boolean;
   postNotifications: boolean;
   usageStats: boolean;
+  batteryOptIgnored: boolean;
 };
 
 const INITIAL_GATE: Gate = {
   deviceOwner: false,
   postNotifications: false,
   usageStats: false,
+  batteryOptIgnored: false,
 };
 
 function allGranted(g: Gate): boolean {
-  return g.deviceOwner && g.postNotifications && g.usageStats;
+  return (
+    g.deviceOwner &&
+    g.postNotifications &&
+    g.usageStats &&
+    g.batteryOptIgnored
+  );
 }
+
+const DONT_KILL_MY_APP_URL = 'https://dontkillmyapp.com';
+
+const DO_PREREQS = [
+  'No Google accounts signed in (Settings → Passwords & accounts)',
+  'No work profile (employer MDM)',
+  'No guest user, private space, or cloned app profile',
+];
 
 async function checkPostNotifications(): Promise<boolean> {
   if (Platform.OS !== 'android' || (Platform.Version as number) < 33) {
@@ -78,12 +94,19 @@ function App() {
   const refreshGate = useCallback(async () => {
     setError(null);
     try {
-      const [deviceOwner, postNotifications, usageStats] = await Promise.all([
-        DevicePolicy.isDeviceOwner(),
-        checkPostNotifications(),
-        UsageStats.hasUsageStatsPermission(),
-      ]);
-      setGate({ deviceOwner, postNotifications, usageStats });
+      const [deviceOwner, postNotifications, usageStats, batteryOptIgnored] =
+        await Promise.all([
+          DevicePolicy.isDeviceOwner(),
+          checkPostNotifications(),
+          UsageStats.hasUsageStatsPermission(),
+          TimerService.isIgnoringBatteryOptimizations(),
+        ]);
+      setGate({
+        deviceOwner,
+        postNotifications,
+        usageStats,
+        batteryOptIgnored,
+      });
     } catch (e) {
       setError(`gate check failed: ${String(e)}`);
     } finally {
@@ -108,6 +131,21 @@ function App() {
     } catch (e) {
       setError(`open usage settings failed: ${String(e)}`);
     }
+  }, []);
+
+  const handleRequestBatteryOpt = useCallback(async () => {
+    setError(null);
+    try {
+      await TimerService.requestIgnoreBatteryOptimizations();
+    } catch (e) {
+      setError(`battery opt request failed: ${String(e)}`);
+    }
+  }, []);
+
+  const handleOpenDontKillMyApp = useCallback(() => {
+    Linking.openURL(DONT_KILL_MY_APP_URL).catch(e =>
+      setError(`open link failed: ${String(e)}`),
+    );
   }, []);
 
   useEffect(() => {
@@ -142,6 +180,8 @@ function App() {
               onRefresh={refreshGate}
               onRequestNotifications={handleRequestNotifications}
               onOpenUsageSettings={handleOpenUsageSettings}
+              onRequestBatteryOpt={handleRequestBatteryOpt}
+              onOpenDontKillMyApp={handleOpenDontKillMyApp}
             />
           )}
 
@@ -166,6 +206,8 @@ type GateCardProps = {
   onRefresh: () => void;
   onRequestNotifications: () => void;
   onOpenUsageSettings: () => void;
+  onRequestBatteryOpt: () => void;
+  onOpenDontKillMyApp: () => void;
 };
 
 function GateCard({
@@ -173,6 +215,8 @@ function GateCard({
   onRefresh,
   onRequestNotifications,
   onOpenUsageSettings,
+  onRequestBatteryOpt,
+  onOpenDontKillMyApp,
 }: GateCardProps) {
   return (
     <View style={styles.card}>
@@ -184,9 +228,16 @@ function GateCard({
       <GateRow
         title="Device Owner"
         granted={gate.deviceOwner}
-        hint="Run this ADB command once from your Mac, then tap Re-check."
+        hint="Run the ADB command below from your Mac. The command will fail if any of these exist on the device — remove them first:"
         cta={
           <>
+            <View style={styles.prereqList}>
+              {DO_PREREQS.map(item => (
+                <Text key={item} style={styles.prereqItem}>
+                  • {item}
+                </Text>
+              ))}
+            </View>
             <Text selectable style={styles.code}>
               {ADB_DO_CMD}
             </Text>
@@ -216,6 +267,29 @@ function GateCard({
           <>
             <Pressable style={styles.button} onPress={onOpenUsageSettings}>
               <Text style={styles.buttonText}>Open Settings</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.button, styles.secondary]}
+              onPress={onRefresh}>
+              <Text style={styles.buttonText}>Re-check</Text>
+            </Pressable>
+          </>
+        }
+      />
+
+      <GateRow
+        title="Battery Optimization"
+        granted={gate.batteryOptIgnored}
+        hint="Unrestricted power keeps the cycle service alive through Doze. On aggressive OEMs (OnePlus, Xiaomi, Samsung) additional per-OEM steps are needed."
+        cta={
+          <>
+            <Pressable style={styles.button} onPress={onRequestBatteryOpt}>
+              <Text style={styles.buttonText}>Whitelist</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.button, styles.secondary]}
+              onPress={onOpenDontKillMyApp}>
+              <Text style={styles.buttonText}>OEM steps</Text>
             </Pressable>
             <Pressable
               style={[styles.button, styles.secondary]}
@@ -706,6 +780,8 @@ const styles = StyleSheet.create({
     fontFamily: 'Menlo',
     backgroundColor: '#fafafa',
   },
+  prereqList: { gap: 2, marginBottom: 4 },
+  prereqItem: { fontSize: 13, color: '#555' },
 });
 
 export default App;

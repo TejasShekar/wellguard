@@ -9,6 +9,8 @@ export interface Spec extends TurboModule {
   ): Promise<void>;
   stopCycle(packageName: string): Promise<void>;
   isRunning(packageName: string): Promise<boolean>;
+  isIgnoringBatteryOptimizations(): Promise<boolean>;
+  requestIgnoreBatteryOptimizations(): Promise<void>;
 }
 
 export default TurboModuleRegistry.getEnforcing<Spec>('TimerService');
