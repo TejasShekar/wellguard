@@ -34,22 +34,36 @@ fail() { printf "\033[1;31m✗\033[0m %s\n" "$*" >&2; exit 1; }
 if lsof -i :8081 -sTCP:LISTEN >/dev/null 2>&1; then
   ok "Metro already running on :8081"
 else
-  log "Starting Metro in a new Terminal window…"
-  osascript <<OSA >/dev/null
+  # Prefer Terminal.app (visible logs); fall back to nohup if Automation is blocked
+  metro_started=false
+  log "Starting Metro in a new Terminal window..."
+  if osascript <<OSA >/dev/null 2>&1
 tell application "Terminal"
   do script "cd '$(pwd)' && source ~/.nvm/nvm.sh && nvm use 22 >/dev/null && npm start"
   activate
 end tell
 OSA
-  # Wait up to 20s for Metro to bind :8081
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    sleep 2
-    if lsof -i :8081 -sTCP:LISTEN >/dev/null 2>&1; then
-      ok "Metro is up"
-      break
-    fi
-  done
-  lsof -i :8081 -sTCP:LISTEN >/dev/null 2>&1 || warn "Metro didn't bind :8081 in 20s; continuing anyway"
+  then
+    metro_started=true
+  else
+    warn "Terminal.app automation blocked; starting Metro as background process"
+    warn "Logs: tail -f /tmp/wg-metro.log"
+    nohup bash -lc "cd '$(pwd)' && source \$HOME/.nvm/nvm.sh && nvm use 22 >/dev/null && npm start" \
+      >/tmp/wg-metro.log 2>&1 &
+    disown || true
+    metro_started=true
+  fi
+
+  if $metro_started; then
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+      sleep 2
+      if lsof -i :8081 -sTCP:LISTEN >/dev/null 2>&1; then
+        ok "Metro is up"
+        break
+      fi
+    done
+    lsof -i :8081 -sTCP:LISTEN >/dev/null 2>&1 || warn "Metro didn't bind :8081 in 30s; continuing"
+  fi
 fi
 
 # --- 2. Emulator -----------------------------------------------------------
@@ -63,17 +77,17 @@ else
   if pgrep -f "qemu-system.*${AVD}" >/dev/null; then
     warn "Emulator process running but adb reports offline; will wait"
   else
-    log "Booting $AVD…"
+    log "Booting $AVD..."
     nohup "$EMULATOR" -avd "$AVD" >/tmp/wg-emulator.log 2>&1 &
     disown || true
   fi
 fi
 
 # --- 3. Wait for boot ------------------------------------------------------
-log "Waiting for emulator to come online…"
+log "Waiting for emulator to come online..."
 "$ADB" wait-for-device
 
-log "Waiting for boot completion…"
+log "Waiting for boot completion..."
 for _ in $(seq 1 60); do
   booted="$("$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
   if [ "$booted" = "1" ]; then
@@ -93,10 +107,10 @@ if "$ADB" shell pm list packages "$PKG" | grep -q "$PKG"; then
   ok "$PKG already installed"
 else
   if [ ! -f "$APK" ]; then
-    log "Building debug APK (first run — ~2 min)…"
+    log "Building debug APK (first run — ~2 min)..."
     (cd android && ./gradlew assembleDebug)
   fi
-  log "Installing $PKG…"
+  log "Installing $PKG..."
   "$ADB" install -r "$APK" >/dev/null
   ok "Installed $PKG"
 fi
@@ -105,7 +119,7 @@ fi
 if "$ADB" shell dpm list-owners 2>/dev/null | grep -q "$PKG/.receivers.DeviceAdminReceiver.*DeviceOwner"; then
   ok "Device Owner already set"
 else
-  log "Setting Device Owner…"
+  log "Setting Device Owner..."
   set +e
   do_out="$("$ADB" shell dpm set-device-owner "$ADMIN_COMPONENT" 2>&1)"
   do_rc=$?

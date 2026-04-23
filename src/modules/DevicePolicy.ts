@@ -1,2 +1,5 @@
 export { default } from '../../specs/NativeDevicePolicy';
-export type { Spec as DevicePolicySpec } from '../../specs/NativeDevicePolicy';
+export type {
+  Spec as DevicePolicySpec,
+  InstalledApp,
+} from '../../specs/NativeDevicePolicy';

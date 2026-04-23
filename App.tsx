@@ -3,9 +3,11 @@
  * Real UI lands in Milestone 1E and will replace this file.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AppState,
+  FlatList,
+  Modal,
   PermissionsAndroid,
   Platform,
   Pressable,
@@ -13,6 +15,7 @@ import {
   StatusBar,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import {
@@ -21,12 +24,14 @@ import {
 } from 'react-native-safe-area-context';
 
 import DevicePolicy from './src/modules/DevicePolicy';
+import type { InstalledApp } from './src/modules/DevicePolicy';
 import TimerService from './src/modules/TimerService';
 import UsageStats from './src/modules/UsageStats';
+import {
+  useAppConfigStore,
+  type AppConfig,
+} from './src/store/appConfigStore';
 
-const TARGET_PACKAGE = 'com.android.chrome';
-const CYCLE_USE_MIN = 0.333; // 20s — dev-friendly for emulator testing
-const CYCLE_FREEZE_MIN = 0.333;
 const ADB_DO_CMD =
   'adb shell dpm set-device-owner com.wellguard/.receivers.DeviceAdminReceiver';
 
@@ -47,7 +52,6 @@ function allGranted(g: Gate): boolean {
 }
 
 async function checkPostNotifications(): Promise<boolean> {
-  // POST_NOTIFICATIONS only exists on API 33+. Below that it's implicitly granted.
   if (Platform.OS !== 'android' || (Platform.Version as number) < 33) {
     return true;
   }
@@ -69,10 +73,7 @@ async function requestPostNotifications(): Promise<boolean> {
 function App() {
   const [gate, setGate] = useState<Gate>(INITIAL_GATE);
   const [gateLoaded, setGateLoaded] = useState(false);
-  const [lastAction, setLastAction] = useState<string>('—');
-  const [cycleRunning, setCycleRunning] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const refreshGate = useCallback(async () => {
     setError(null);
@@ -109,83 +110,16 @@ function App() {
     }
   }, []);
 
-  const setSuspended = useCallback(async (suspended: boolean) => {
-    setError(null);
-    try {
-      const failed = await DevicePolicy.setPackagesSuspended(
-        [TARGET_PACKAGE],
-        suspended,
-      );
-      const verb = suspended ? 'Blocked' : 'Unblocked';
-      setLastAction(
-        failed.length === 0
-          ? `${verb} ${TARGET_PACKAGE} (empty failed-list)`
-          : `${verb} ${TARGET_PACKAGE} with failures: ${failed.join(', ')}`,
-      );
-    } catch (e) {
-      setError(`setPackagesSuspended failed: ${String(e)}`);
-    }
-  }, []);
-
-  const startCycle = useCallback(async () => {
-    setError(null);
-    try {
-      await TimerService.startCycle(
-        TARGET_PACKAGE,
-        CYCLE_USE_MIN,
-        CYCLE_FREEZE_MIN,
-      );
-      setLastAction(
-        `startCycle(${TARGET_PACKAGE}, use=${CYCLE_USE_MIN}min, freeze=${CYCLE_FREEZE_MIN}min)`,
-      );
-    } catch (e) {
-      setError(`startCycle failed: ${String(e)}`);
-    }
-  }, []);
-
-  const stopCycle = useCallback(async () => {
-    setError(null);
-    try {
-      await TimerService.stopCycle(TARGET_PACKAGE);
-      setLastAction(`stopCycle(${TARGET_PACKAGE})`);
-    } catch (e) {
-      setError(`stopCycle failed: ${String(e)}`);
-    }
-  }, []);
-
-  // Initial gate check.
   useEffect(() => {
     refreshGate();
   }, [refreshGate]);
 
-  // Re-check gate whenever the app comes back to the foreground — Settings
-  // deep-links (usage access, notifications) flip state outside of our process.
   useEffect(() => {
     const sub = AppState.addEventListener('change', state => {
-      if (state === 'active') {
-        refreshGate();
-      }
+      if (state === 'active') refreshGate();
     });
     return () => sub.remove();
   }, [refreshGate]);
-
-  // Poll cycle status every second — only once the gate passes.
-  useEffect(() => {
-    if (!allGranted(gate)) return;
-    const tick = async () => {
-      try {
-        const running = await TimerService.isRunning(TARGET_PACKAGE);
-        setCycleRunning(running);
-      } catch {
-        // swallow — polling errors shouldn't spam the UI
-      }
-    };
-    tick();
-    pollRef.current = setInterval(tick, 1000);
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
-  }, [gate]);
 
   const gatePassed = allGranted(gate);
 
@@ -203,114 +137,15 @@ function App() {
           )}
 
           {gateLoaded && !gatePassed && (
-            <View style={styles.card}>
-              <Text style={styles.label}>Setup required</Text>
-              <Text style={styles.hint}>
-                WellGuard needs these before the cycle engine can run.
-              </Text>
-
-              <GateRow
-                title="Device Owner"
-                granted={gate.deviceOwner}
-                hint="Run this ADB command once from your Mac, then tap Re-check."
-                cta={
-                  <>
-                    <Text selectable style={styles.code}>
-                      {ADB_DO_CMD}
-                    </Text>
-                    <Pressable style={styles.button} onPress={refreshGate}>
-                      <Text style={styles.buttonText}>Re-check</Text>
-                    </Pressable>
-                  </>
-                }
-              />
-
-              <GateRow
-                title="Notifications"
-                granted={gate.postNotifications}
-                hint="Needed for the cycle foreground notification + pre-freeze warnings."
-                cta={
-                  <Pressable
-                    style={styles.button}
-                    onPress={handleRequestNotifications}>
-                    <Text style={styles.buttonText}>Grant</Text>
-                  </Pressable>
-                }
-              />
-
-              <GateRow
-                title="Usage Access"
-                granted={gate.usageStats}
-                hint="Used to read per-app time in foreground (dashboard in M2)."
-                cta={
-                  <>
-                    <Pressable
-                      style={styles.button}
-                      onPress={handleOpenUsageSettings}>
-                      <Text style={styles.buttonText}>Open Settings</Text>
-                    </Pressable>
-                    <Pressable
-                      style={[styles.button, styles.secondary]}
-                      onPress={refreshGate}>
-                      <Text style={styles.buttonText}>Re-check</Text>
-                    </Pressable>
-                  </>
-                }
-              />
-            </View>
+            <GateCard
+              gate={gate}
+              onRefresh={refreshGate}
+              onRequestNotifications={handleRequestNotifications}
+              onOpenUsageSettings={handleOpenUsageSettings}
+            />
           )}
 
-          {gatePassed && (
-            <>
-              <View style={styles.card}>
-                <Text style={styles.label}>Device Owner</Text>
-                <Text style={styles.value}>yes</Text>
-              </View>
-
-              <View style={styles.card}>
-                <Text style={styles.label}>Target package</Text>
-                <Text style={styles.value}>{TARGET_PACKAGE}</Text>
-                <View style={styles.row}>
-                  <Pressable
-                    style={[styles.button, styles.block]}
-                    onPress={() => setSuspended(true)}>
-                    <Text style={styles.buttonText}>Block</Text>
-                  </Pressable>
-                  <Pressable
-                    style={[styles.button, styles.unblock]}
-                    onPress={() => setSuspended(false)}>
-                    <Text style={styles.buttonText}>Unblock</Text>
-                  </Pressable>
-                </View>
-              </View>
-
-              <View style={styles.card}>
-                <Text style={styles.label}>
-                  Cycle (use {CYCLE_USE_MIN}min / freeze {CYCLE_FREEZE_MIN}min)
-                </Text>
-                <Text style={styles.value}>
-                  {cycleRunning ? 'running' : 'stopped'}
-                </Text>
-                <View style={styles.row}>
-                  <Pressable
-                    style={[styles.button, styles.unblock]}
-                    onPress={startCycle}>
-                    <Text style={styles.buttonText}>Start</Text>
-                  </Pressable>
-                  <Pressable
-                    style={[styles.button, styles.block]}
-                    onPress={stopCycle}>
-                    <Text style={styles.buttonText}>Stop</Text>
-                  </Pressable>
-                </View>
-              </View>
-
-              <View style={styles.card}>
-                <Text style={styles.label}>Last action</Text>
-                <Text style={styles.value}>{lastAction}</Text>
-              </View>
-            </>
-          )}
+          {gatePassed && <GuardList onError={setError} />}
 
           {error && (
             <View style={[styles.card, styles.errorCard]}>
@@ -321,6 +156,76 @@ function App() {
         </ScrollView>
       </SafeAreaView>
     </SafeAreaProvider>
+  );
+}
+
+// --- Gate -------------------------------------------------------------------
+
+type GateCardProps = {
+  gate: Gate;
+  onRefresh: () => void;
+  onRequestNotifications: () => void;
+  onOpenUsageSettings: () => void;
+};
+
+function GateCard({
+  gate,
+  onRefresh,
+  onRequestNotifications,
+  onOpenUsageSettings,
+}: GateCardProps) {
+  return (
+    <View style={styles.card}>
+      <Text style={styles.label}>Setup required</Text>
+      <Text style={styles.hint}>
+        WellGuard needs these before the cycle engine can run.
+      </Text>
+
+      <GateRow
+        title="Device Owner"
+        granted={gate.deviceOwner}
+        hint="Run this ADB command once from your Mac, then tap Re-check."
+        cta={
+          <>
+            <Text selectable style={styles.code}>
+              {ADB_DO_CMD}
+            </Text>
+            <Pressable style={styles.button} onPress={onRefresh}>
+              <Text style={styles.buttonText}>Re-check</Text>
+            </Pressable>
+          </>
+        }
+      />
+
+      <GateRow
+        title="Notifications"
+        granted={gate.postNotifications}
+        hint="Needed for the cycle foreground notification + pre-freeze warnings."
+        cta={
+          <Pressable style={styles.button} onPress={onRequestNotifications}>
+            <Text style={styles.buttonText}>Grant</Text>
+          </Pressable>
+        }
+      />
+
+      <GateRow
+        title="Usage Access"
+        granted={gate.usageStats}
+        hint="Used to read per-app time in foreground (dashboard in M2)."
+        cta={
+          <>
+            <Pressable style={styles.button} onPress={onOpenUsageSettings}>
+              <Text style={styles.buttonText}>Open Settings</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.button, styles.secondary]}
+              onPress={onRefresh}>
+              <Text style={styles.buttonText}>Re-check</Text>
+            </Pressable>
+          </>
+        }
+      />
+    </View>
   );
 }
 
@@ -350,6 +255,357 @@ function GateRow({ title, granted, hint, cta }: GateRowProps) {
   );
 }
 
+// --- Guard list -------------------------------------------------------------
+
+type GuardListProps = {
+  onError: (msg: string | null) => void;
+};
+
+function GuardList({ onError }: GuardListProps) {
+  const configsMap = useAppConfigStore(s => s.configs);
+  const remove = useAppConfigStore(s => s.remove);
+  const configs = useMemo(
+    () =>
+      Object.values(configsMap).sort((a, b) =>
+        a.appName.localeCompare(b.appName),
+      ),
+    [configsMap],
+  );
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [runningMap, setRunningMap] = useState<Record<string, boolean>>({});
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    const tick = async () => {
+      try {
+        const entries = await Promise.all(
+          configs.map(async c => [
+            c.packageName,
+            await TimerService.isRunning(c.packageName),
+          ] as const),
+        );
+        setRunningMap(Object.fromEntries(entries));
+      } catch {
+        // swallow — polling errors shouldn't spam the UI
+      }
+    };
+    tick();
+    pollRef.current = setInterval(tick, 1000);
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [configs]);
+
+  const startCycle = useCallback(
+    async (config: AppConfig) => {
+      onError(null);
+      try {
+        await TimerService.startCycle(
+          config.packageName,
+          config.useWindowMinutes,
+          config.freezeWindowMinutes,
+        );
+      } catch (e) {
+        onError(`startCycle failed: ${String(e)}`);
+      }
+    },
+    [onError],
+  );
+
+  const stopCycle = useCallback(
+    async (config: AppConfig) => {
+      onError(null);
+      try {
+        await TimerService.stopCycle(config.packageName);
+      } catch (e) {
+        onError(`stopCycle failed: ${String(e)}`);
+      }
+    },
+    [onError],
+  );
+
+  const handleRemove = useCallback(
+    async (config: AppConfig) => {
+      if (runningMap[config.packageName]) {
+        await stopCycle(config);
+      }
+      remove(config.packageName);
+    },
+    [remove, runningMap, stopCycle],
+  );
+
+  return (
+    <>
+      {configs.length === 0 && (
+        <View style={styles.card}>
+          <Text style={styles.label}>No apps configured</Text>
+          <Text style={styles.hint}>
+            Tap + Add app to pick an installed app and set its use/freeze
+            windows.
+          </Text>
+        </View>
+      )}
+
+      {configs.map(config => (
+        <ConfigRow
+          key={config.packageName}
+          config={config}
+          running={!!runningMap[config.packageName]}
+          onStart={() => startCycle(config)}
+          onStop={() => stopCycle(config)}
+          onRemove={() => handleRemove(config)}
+        />
+      ))}
+
+      <Pressable
+        style={[styles.button, styles.addButton]}
+        onPress={() => setPickerOpen(true)}>
+        <Text style={styles.buttonText}>+ Add app</Text>
+      </Pressable>
+
+      <AddAppModal
+        visible={pickerOpen}
+        existingPackages={new Set(configs.map(c => c.packageName))}
+        onClose={() => setPickerOpen(false)}
+        onError={onError}
+      />
+    </>
+  );
+}
+
+type ConfigRowProps = {
+  config: AppConfig;
+  running: boolean;
+  onStart: () => void;
+  onStop: () => void;
+  onRemove: () => void;
+};
+
+function ConfigRow({
+  config,
+  running,
+  onStart,
+  onStop,
+  onRemove,
+}: ConfigRowProps) {
+  return (
+    <View style={styles.card}>
+      <View style={styles.rowBetween}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.configTitle}>{config.appName}</Text>
+          <Text style={styles.configPkg}>{config.packageName}</Text>
+        </View>
+        <Text
+          style={[
+            styles.runningPill,
+            running ? styles.runningPillOn : styles.runningPillOff,
+          ]}>
+          {running ? 'running' : 'stopped'}
+        </Text>
+      </View>
+      <Text style={styles.configMeta}>
+        use {config.useWindowMinutes}min · freeze {config.freezeWindowMinutes}min
+      </Text>
+      <View style={styles.row}>
+        {running ? (
+          <Pressable style={[styles.button, styles.block]} onPress={onStop}>
+            <Text style={styles.buttonText}>Stop</Text>
+          </Pressable>
+        ) : (
+          <Pressable style={[styles.button, styles.unblock]} onPress={onStart}>
+            <Text style={styles.buttonText}>Start</Text>
+          </Pressable>
+        )}
+        <Pressable
+          style={[styles.button, styles.secondary]}
+          onPress={onRemove}>
+          <Text style={styles.buttonText}>Remove</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+// --- Add-app modal ----------------------------------------------------------
+
+type AddAppModalProps = {
+  visible: boolean;
+  existingPackages: Set<string>;
+  onClose: () => void;
+  onError: (msg: string | null) => void;
+};
+
+function AddAppModal({
+  visible,
+  existingPackages,
+  onClose,
+  onError,
+}: AddAppModalProps) {
+  const upsert = useAppConfigStore(s => s.upsert);
+  const [apps, setApps] = useState<InstalledApp[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [picked, setPicked] = useState<InstalledApp | null>(null);
+  const [useMin, setUseMin] = useState('10');
+  const [freezeMin, setFreezeMin] = useState('60');
+
+  const loadApps = useCallback(async () => {
+    setLoading(true);
+    try {
+      const list = await DevicePolicy.getInstalledUserApps();
+      list.sort((a, b) => a.appName.localeCompare(b.appName));
+      setApps(list);
+    } catch (e) {
+      onError(`getInstalledUserApps failed: ${String(e)}`);
+    } finally {
+      setLoading(false);
+    }
+  }, [onError]);
+
+  useEffect(() => {
+    if (visible && apps.length === 0) loadApps();
+  }, [visible, apps.length, loadApps]);
+
+  const handleClose = useCallback(() => {
+    setPicked(null);
+    setUseMin('10');
+    setFreezeMin('60');
+    onClose();
+  }, [onClose]);
+
+  const handleSave = useCallback(() => {
+    if (!picked) return;
+    const useNum = Number(useMin);
+    const freezeNum = Number(freezeMin);
+    if (!Number.isFinite(useNum) || useNum <= 0) {
+      onError('use minutes must be > 0');
+      return;
+    }
+    if (!Number.isFinite(freezeNum) || freezeNum <= 0) {
+      onError('freeze minutes must be > 0');
+      return;
+    }
+    upsert({
+      packageName: picked.packageName,
+      appName: picked.appName,
+      useWindowMinutes: useNum,
+      freezeWindowMinutes: freezeNum,
+    });
+    handleClose();
+  }, [picked, useMin, freezeMin, upsert, onError, handleClose]);
+
+  const pickable = useMemo(
+    () => apps.filter(a => !existingPackages.has(a.packageName)),
+    [apps, existingPackages],
+  );
+
+  return (
+    <Modal
+      visible={visible}
+      animationType="slide"
+      onRequestClose={handleClose}
+      presentationStyle="pageSheet">
+      <SafeAreaView style={styles.modalContainer}>
+        <View style={styles.modalHeader}>
+          <Text style={styles.title}>
+            {picked ? 'Configure cycle' : 'Pick an app'}
+          </Text>
+          <Pressable onPress={handleClose}>
+            <Text style={styles.cancelText}>Cancel</Text>
+          </Pressable>
+        </View>
+
+        {!picked && (
+          <>
+            {loading && (
+              <View style={styles.card}>
+                <Text style={styles.value}>loading apps…</Text>
+              </View>
+            )}
+            {!loading && pickable.length === 0 && (
+              <View style={styles.card}>
+                <Text style={styles.hint}>
+                  All launchable apps are already configured.
+                </Text>
+              </View>
+            )}
+            <FlatList
+              data={pickable}
+              keyExtractor={item => item.packageName}
+              renderItem={({ item }) => (
+                <Pressable
+                  style={styles.appRow}
+                  onPress={() => setPicked(item)}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.configTitle}>{item.appName}</Text>
+                    <Text style={styles.configPkg}>{item.packageName}</Text>
+                  </View>
+                  {item.isSystem && (
+                    <Text style={styles.systemTag}>system</Text>
+                  )}
+                </Pressable>
+              )}
+              contentContainerStyle={{ paddingBottom: 40 }}
+            />
+          </>
+        )}
+
+        {picked && (
+          <ScrollView contentContainerStyle={styles.content}>
+            <View style={styles.card}>
+              <Text style={styles.configTitle}>{picked.appName}</Text>
+              <Text style={styles.configPkg}>{picked.packageName}</Text>
+            </View>
+
+            <View style={styles.card}>
+              <Text style={styles.label}>Use window (minutes)</Text>
+              <TextInput
+                style={styles.input}
+                value={useMin}
+                onChangeText={setUseMin}
+                keyboardType="decimal-pad"
+                placeholder="10"
+              />
+              <Text style={styles.hint}>
+                How long the app stays usable in each cycle. Decimals OK for
+                testing (0.333 ≈ 20s).
+              </Text>
+            </View>
+
+            <View style={styles.card}>
+              <Text style={styles.label}>Freeze window (minutes)</Text>
+              <TextInput
+                style={styles.input}
+                value={freezeMin}
+                onChangeText={setFreezeMin}
+                keyboardType="decimal-pad"
+                placeholder="60"
+              />
+              <Text style={styles.hint}>
+                How long the app is blocked between use windows.
+              </Text>
+            </View>
+
+            <View style={styles.row}>
+              <Pressable
+                style={[styles.button, styles.secondary]}
+                onPress={() => setPicked(null)}>
+                <Text style={styles.buttonText}>Back</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.button, styles.unblock]}
+                onPress={handleSave}>
+                <Text style={styles.buttonText}>Save</Text>
+              </Pressable>
+            </View>
+          </ScrollView>
+        )}
+      </SafeAreaView>
+    </Modal>
+  );
+}
+
+// --- styles -----------------------------------------------------------------
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f5f5f7' },
   content: { padding: 16, gap: 12 },
@@ -364,6 +620,7 @@ const styles = StyleSheet.create({
   value: { fontSize: 16, fontFamily: 'Menlo' },
   hint: { fontSize: 13, color: '#555' },
   row: { flexDirection: 'row', gap: 8, marginTop: 4 },
+  rowBetween: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   button: {
     paddingVertical: 10,
     paddingHorizontal: 14,
@@ -372,6 +629,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flex: 1,
   },
+  addButton: { marginTop: 8 },
   secondary: { backgroundColor: '#6b7280' },
   block: { backgroundColor: '#d93025' },
   unblock: { backgroundColor: '#1e8e3e' },
@@ -396,6 +654,57 @@ const styles = StyleSheet.create({
     padding: 8,
     backgroundColor: '#f0f0f3',
     borderRadius: 6,
+  },
+  configTitle: { fontSize: 16, fontWeight: '600' },
+  configPkg: { fontSize: 12, color: '#777', fontFamily: 'Menlo' },
+  configMeta: { fontSize: 13, color: '#444' },
+  runningPill: {
+    fontSize: 11,
+    fontWeight: '700',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 10,
+    overflow: 'hidden',
+    textTransform: 'uppercase',
+  },
+  runningPillOn: { backgroundColor: '#1e8e3e', color: 'white' },
+  runningPillOff: { backgroundColor: '#e5e5ea', color: '#555' },
+  modalContainer: { flex: 1, backgroundColor: '#f5f5f7' },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 16,
+    paddingBottom: 8,
+    backgroundColor: 'white',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#e5e5ea',
+  },
+  cancelText: { color: '#2b6ef2', fontSize: 15 },
+  appRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 14,
+    gap: 8,
+    backgroundColor: 'white',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#e5e5ea',
+  },
+  systemTag: {
+    fontSize: 10,
+    color: '#888',
+    textTransform: 'uppercase',
+    fontWeight: '600',
+  },
+  input: {
+    borderWidth: 1,
+    borderColor: '#d1d5db',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 16,
+    fontFamily: 'Menlo',
+    backgroundColor: '#fafafa',
   },
 });
 
