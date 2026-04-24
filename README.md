@@ -1,97 +1,113 @@
-This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+# WellGuard
 
-# Getting Started
+Personal Android app that enforces use/freeze cycles on distracting apps at the OS level via `DevicePolicyManager`. Android-only, sideloaded (not Play Store), React Native 0.85 (New Architecture) + Kotlin TurboModules.
 
-> **Note**: Make sure you have completed the [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide before proceeding.
+For product scope, architecture, and data models see [`CLAUDE.md`](./CLAUDE.md).
 
-## Step 1: Start Metro
+## Prerequisites
 
-First, you will need to run **Metro**, the JavaScript build tool for React Native.
+- **Node 22.x** (via `nvm use 22`)
+- **Android Studio** with the Android SDK (Platform 36, Build-Tools 36.x)
+- **Java 17** (bundled with Android Studio — `JAVA_HOME` should point at it)
+- An **Android emulator** (Pixel 9 API 36 recommended) created via Android Studio's Device Manager
 
-To start the Metro dev server, run the following command from the root of your React Native project:
+### Emulator requirements (important)
+
+Device Owner mode — which WellGuard relies on for OS-level app blocking — **cannot be set** if any of these exist on the device:
+
+- Google accounts signed in (Settings → Passwords & accounts)
+- A work profile (employer MDM)
+- Guest user, private space, or cloned app profiles
+
+Use a fresh AVD with none of the above. Skip signing into Google when the setup wizard prompts.
+
+## First-time setup
 
 ```sh
-# Using npm
+nvm use 22
+npm install
+```
+
+## Running the app
+
+Dev uses three terminals. Start once; keep them running through the session.
+
+**Terminal 1 — Android Emulator**
+
+Either start from Android Studio's Device Manager (easiest) or from the CLI:
+
+```sh
+~/Library/Android/sdk/emulator/emulator -avd Pixel_9
+```
+
+Wait for the home screen.
+
+**Terminal 2 — Metro**
+
+```sh
 npm start
-
-# OR using Yarn
-yarn start
 ```
 
-## Step 2: Build and run your app
+Metro's logs stay visible here. Press `r` to reload JS, `d` to open the dev menu.
 
-With Metro running, open a new terminal window/pane from the root of your React Native project, and use one of the following commands to build and run your Android or iOS app:
-
-### Android
+**Terminal 3 — Build + install**
 
 ```sh
-# Using npm
 npm run android
-
-# OR using Yarn
-yarn android
 ```
 
-### iOS
+This runs `./gradlew :app:installDebug` and launches `MainActivity`. Re-run only when native code (Kotlin / `AndroidManifest.xml` / new TurboModule specs) changes. For pure JS/TS changes, Metro's Fast Refresh handles it.
 
-For iOS, remember to install CocoaPods dependencies (this only needs to be run on first clone or after updating native deps).
+### One-time Device Owner setup
 
-The first time you create a new project, run the Ruby bundler to install CocoaPods itself:
+After the first install, set WellGuard as Device Owner so it can suspend other apps:
 
 ```sh
-bundle install
+adb shell dpm set-device-owner com.wellguard/.receivers.DeviceAdminReceiver
 ```
 
-Then, and every time you update your native dependencies, run:
+This must succeed for the app to function. If it fails, re-check the emulator requirements above.
+
+## Permissions
+
+The in-app onboarding gate surfaces each required permission with a button to grant it:
+
+- **Device Owner** — via the ADB command above
+- **Notifications** — runtime prompt
+- **Usage Access** — deep-links to Settings → Digital Wellbeing → Usage access
+- **Battery Optimization** — one-tap system dialog to whitelist WellGuard; on aggressive OEMs (OnePlus, Xiaomi, Samsung) the in-app OEM steps link points to [dontkillmyapp.com](https://dontkillmyapp.com) for per-device instructions
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `EADDRINUSE: address already in use :::8081` | Kill stale Metro: `kill $(lsof -i :8081 -t)` |
+| Emulator stuck at `adb: device offline` | Kill stale qemu (`pkill -f "qemu-system.*Pixel_9"`) and cold-boot (`emulator -avd Pixel_9 -no-snapshot-load`) |
+| App shows red-box "Unable to load script" | Run `adb reverse tcp:8081 tcp:8081`, then reload in app |
+| `dpm set-device-owner` fails | Remove Google accounts / work profile / guest user from the emulator, then retry |
+| Device Owner apps can't be force-stopped | Reinstall via `npm run android` to restart the process |
+
+## Testing the native cycle engine directly (dev-only)
+
+`android/app/src/debug/AndroidManifest.xml` exports `TimerForegroundService` (debug builds only, protected by `android.permission.DUMP`) so you can drive cycles from `adb` without touching the UI:
 
 ```sh
-bundle exec pod install
+# start a 1-min use / 1-min freeze cycle for Chrome
+adb shell am start-foreground-service \
+  -n com.wellguard/.services.TimerForegroundService \
+  --es action start \
+  --es packageName com.android.chrome \
+  --ed useMinutes 1.0 \
+  --ed freezeMinutes 1.0
+
+# inspect persisted cycle state
+adb shell run-as com.wellguard cat /data/data/com.wellguard/shared_prefs/wellguard.cycle.xml
+
+# stop
+adb shell am start-foreground-service \
+  -n com.wellguard/.services.TimerForegroundService \
+  --es action stop \
+  --es packageName com.android.chrome
 ```
 
-For more information, please visit [CocoaPods Getting Started guide](https://guides.cocoapods.org/using/getting-started.html).
-
-```sh
-# Using npm
-npm run ios
-
-# OR using Yarn
-yarn ios
-```
-
-If everything is set up correctly, you should see your new app running in the Android Emulator, iOS Simulator, or your connected device.
-
-This is one way to run your app — you can also build it directly from Android Studio or Xcode.
-
-## Step 3: Modify your app
-
-Now that you have successfully run the app, let's make changes!
-
-Open `App.tsx` in your text editor of choice and make some changes. When you save, your app will automatically update and reflect these changes — this is powered by [Fast Refresh](https://reactnative.dev/docs/fast-refresh).
-
-When you want to forcefully reload, for example to reset the state of your app, you can perform a full reload:
-
-- **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Dev Menu**, accessed via <kbd>Ctrl</kbd> + <kbd>M</kbd> (Windows/Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (macOS).
-- **iOS**: Press <kbd>R</kbd> in iOS Simulator.
-
-## Congratulations! :tada:
-
-You've successfully run and modified your React Native App. :partying_face:
-
-### Now what?
-
-- If you want to add this new React Native code to an existing application, check out the [Integration guide](https://reactnative.dev/docs/integration-with-existing-apps).
-- If you're curious to learn more about React Native, check out the [docs](https://reactnative.dev/docs/getting-started).
-
-# Troubleshooting
-
-If you're having issues getting the above steps to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
-
-# Learn More
-
-To learn more about React Native, take a look at the following resources:
-
-- [React Native Website](https://reactnative.dev) - learn more about React Native.
-- [Getting Started](https://reactnative.dev/docs/environment-setup) - an **overview** of React Native and how setup your environment.
-- [Learn the Basics](https://reactnative.dev/docs/getting-started) - a **guided tour** of the React Native **basics**.
-- [Blog](https://reactnative.dev/blog) - read the latest official React Native **Blog** posts.
-- [`@facebook/react-native`](https://github.com/facebook/react-native) - the Open Source; GitHub **repository** for React Native.
+Release builds do not export this service.
