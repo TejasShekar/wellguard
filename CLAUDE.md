@@ -60,7 +60,7 @@ You are assisting a **lead frontend engineer** (React, TypeScript, Next.js, Redu
 |---|---|
 | Database | Firebase Firestore |
 | Push notifications | Firebase Cloud Messaging (FCM) |
-| Auth | Firebase Auth (email/anonymous) |
+| Auth | Firebase Auth (email/password) — uid survives reinstall/wipe; AP signs in to PWA with their own email; no Google account required on device (which would break Device Owner) |
 | Hosting | Firebase Hosting (for AP companion PWA) |
 
 ### AP Companion (PWA)

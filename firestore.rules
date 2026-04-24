@@ -1,0 +1,69 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // User docs — owner-only read/write.
+    // An AP reading a user's doc is allowed only if that user lists the AP in apIds.
+    match /users/{userId} {
+      allow read: if request.auth != null && (
+        request.auth.uid == userId ||
+        request.auth.uid in resource.data.apIds
+      );
+      allow create: if request.auth != null && request.auth.uid == userId;
+      allow update: if request.auth != null && request.auth.uid == userId;
+      allow delete: if false;
+    }
+
+    // Accountability partner records — owned by the user they guard.
+    match /accountabilityPartners/{apId} {
+      allow read: if request.auth != null && (
+        request.auth.uid == resource.data.userId ||
+        request.auth.uid == apId
+      );
+      allow create: if request.auth != null &&
+        request.auth.uid == request.resource.data.userId;
+      allow update: if request.auth != null && (
+        request.auth.uid == resource.data.userId ||
+        request.auth.uid == apId
+      );
+      allow delete: if request.auth != null &&
+        request.auth.uid == resource.data.userId;
+    }
+
+    // Unblock requests — user creates, AP approves/denies.
+    match /unblockRequests/{requestId} {
+      allow read: if request.auth != null && (
+        request.auth.uid == resource.data.userId ||
+        request.auth.uid == resource.data.apId
+      );
+      allow create: if request.auth != null &&
+        request.auth.uid == request.resource.data.userId;
+      allow update: if request.auth != null &&
+        request.auth.uid == resource.data.apId &&
+        request.resource.data.userId == resource.data.userId;
+      allow delete: if false;
+    }
+
+    // Removal requests — same shape as unblock: user creates, AP resolves.
+    match /removalRequests/{requestId} {
+      allow read: if request.auth != null && (
+        request.auth.uid == resource.data.userId ||
+        request.auth.uid == resource.data.apId
+      );
+      allow create: if request.auth != null &&
+        request.auth.uid == request.resource.data.userId;
+      allow update: if request.auth != null &&
+        request.auth.uid == resource.data.apId &&
+        request.resource.data.userId == resource.data.userId;
+      allow delete: if false;
+    }
+
+    // Per-user app configs — owner-only.
+    match /appConfigs/{configId} {
+      allow read, write: if request.auth != null &&
+        request.auth.uid == resource.data.userId;
+      allow create: if request.auth != null &&
+        request.auth.uid == request.resource.data.userId;
+    }
+  }
+}

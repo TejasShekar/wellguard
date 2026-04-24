@@ -28,6 +28,11 @@ import DevicePolicy from './src/modules/DevicePolicy';
 import type { InstalledApp } from './src/modules/DevicePolicy';
 import TimerService from './src/modules/TimerService';
 import UsageStats from './src/modules/UsageStats';
+import { AuthScreen } from './src/screens/AuthScreen';
+import { signOut, watchAuth } from './src/services/auth';
+import { registerFcmToken, watchFcmTokenRefresh } from './src/services/fcm';
+import { upsertUserOnSignIn } from './src/services/firestore';
+import { useAuthStore } from './src/store/authStore';
 import {
   useAppConfigStore,
   type AppConfig,
@@ -87,9 +92,70 @@ async function requestPostNotifications(): Promise<boolean> {
 }
 
 function App() {
+  const user = useAuthStore(s => s.user);
+  const initialized = useAuthStore(s => s.initialized);
+  const setUser = useAuthStore(s => s.setUser);
+  const markInitialized = useAuthStore(s => s.markInitialized);
+
+  useEffect(() => {
+    const unsub = watchAuth(nextUser => {
+      setUser(nextUser);
+      markInitialized();
+    });
+    return unsub;
+  }, [setUser, markInitialized]);
+
+  useEffect(() => {
+    if (!user) return;
+    let unsubToken: (() => void) | undefined;
+    (async () => {
+      try {
+        await upsertUserOnSignIn({ uid: user.uid, email: user.email });
+        await registerFcmToken(user.uid);
+        unsubToken = watchFcmTokenRefresh(user.uid);
+      } catch (e) {
+        console.warn('user sync failed', e);
+      }
+    })();
+    return () => {
+      unsubToken?.();
+    };
+  }, [user]);
+
+  if (!initialized) {
+    return (
+      <SafeAreaProvider>
+        <StatusBar barStyle="dark-content" />
+        <SafeAreaView style={styles.container} />
+      </SafeAreaProvider>
+    );
+  }
+
+  if (!user) {
+    return (
+      <SafeAreaProvider>
+        <StatusBar barStyle="dark-content" />
+        <AuthScreen />
+      </SafeAreaProvider>
+    );
+  }
+
+  return <MainShell />;
+}
+
+function MainShell() {
+  const user = useAuthStore(s => s.user);
   const [gate, setGate] = useState<Gate>(INITIAL_GATE);
   const [gateLoaded, setGateLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const handleSignOut = useCallback(async () => {
+    try {
+      await signOut();
+    } catch (e) {
+      setError(`sign out failed: ${String(e)}`);
+    }
+  }, []);
 
   const refreshGate = useCallback(async () => {
     setError(null);
@@ -166,7 +232,15 @@ function App() {
       <StatusBar barStyle="dark-content" />
       <SafeAreaView style={styles.container}>
         <ScrollView contentContainerStyle={styles.content}>
-          <Text style={styles.title}>WellGuard · harness</Text>
+          <View style={styles.rowBetween}>
+            <Text style={styles.title}>WellGuard · harness</Text>
+            <Pressable onPress={handleSignOut} hitSlop={8}>
+              <Text style={styles.signOut}>Sign out</Text>
+            </Pressable>
+          </View>
+          {user?.email && (
+            <Text style={styles.signedInAs}>signed in as {user.email}</Text>
+          )}
 
           {!gateLoaded && (
             <View style={styles.card}>
@@ -782,6 +856,8 @@ const styles = StyleSheet.create({
   },
   prereqList: { gap: 2, marginBottom: 4 },
   prereqItem: { fontSize: 13, color: '#555' },
+  signOut: { color: '#2b6ef2', fontSize: 14 },
+  signedInAs: { fontSize: 12, color: '#777', marginBottom: 6 },
 });
 
 export default App;

@@ -73,3 +73,7 @@ yarn-error.log
 !.yarn/releases
 !.yarn/sdks
 !.yarn/versions
+
+# Firebase — per-developer config, never commit
+android/app/google-services.json
+companion-pwa/src/firebase-config.ts
