@@ -28,8 +28,6 @@ nvm use 22
 npm install
 ```
 
-Then follow [`FIREBASE.md`](./FIREBASE.md) to create a Firebase project and drop `google-services.json` into `android/app/`. The app won't build without it.
-
 ## Running the app
 
 Dev uses three terminals. Start once; keep them running through the session.
