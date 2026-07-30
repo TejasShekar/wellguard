@@ -20,13 +20,13 @@ import {
   useZenStore,
   type ZenSchedule,
 } from '../store/zenStore';
+import { radius, spacing, useTheme } from '../theme';
+import { Body, Button, Card, Hint, Mono, Pill, Row, RowBetween, SectionLabel, Title } from '../ui';
 
 const DAY_LABELS = ['S', 'M', 'T', 'W', 'T', 'F', 'S']; // 0=Sun..6=Sat
 
 function toHHMM(min: number): string {
-  const h = Math.floor(min / 60);
-  const m = min % 60;
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  return `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
 }
 
 function parseHHMM(s: string): number | null {
@@ -41,6 +41,7 @@ function parseHHMM(s: string): number | null {
 type Props = { onError: (msg: string | null) => void };
 
 export function ZenScreen({ onError }: Props) {
+  const c = useTheme();
   const saved = useZenStore(s => s.schedule);
 
   const [apps, setApps] = useState<InstalledApp[]>([]);
@@ -54,7 +55,6 @@ export function ZenScreen({ onError }: Props) {
   const [zenActive, setZenActive] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  // Hydrate the editor from the saved schedule once it is available.
   useEffect(() => {
     if (!saved) return;
     setAllowed(new Set(saved.allowedPackages));
@@ -65,7 +65,6 @@ export function ZenScreen({ onError }: Props) {
     setIsActive(saved.isActive);
   }, [saved]);
 
-  // Poll the native active-session flag so the status pill reflects reality.
   useEffect(() => {
     let alive = true;
     const tick = async () => {
@@ -176,7 +175,6 @@ export function ZenScreen({ onError }: Props) {
     const schedule = buildSchedule();
     if (!schedule) return;
     try {
-      // Persist first so the native side has the allowlist, then engage for 1 min.
       await saveZenSchedule(schedule);
       await Zen.startZenNow(1);
     } catch (e) {
@@ -193,94 +191,119 @@ export function ZenScreen({ onError }: Props) {
     }
   }, [onError]);
 
-  const allowedCount = allowed.size;
+  const input = {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: c.border,
+    borderRadius: radius.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 10,
+    fontSize: 16,
+    fontFamily: 'Menlo',
+    color: c.text,
+    backgroundColor: c.surfaceAlt,
+  } as const;
 
   return (
-    <ScrollView contentContainerStyle={styles.content}>
-      <View style={styles.headerRow}>
-        <Text style={styles.title}>Zen mode</Text>
-        <Text
-          style={[
-            styles.pill,
-            zenActive ? styles.pillOn : styles.pillOff,
-          ]}>
-          {zenActive ? 'active' : 'idle'}
-        </Text>
-      </View>
-      <Text style={styles.hint}>
-        During the window, only the apps you allow stay usable — everything else
-        is suspended. Great for keeping the phone "basic" in the morning.
-      </Text>
+    <ScrollView
+      contentContainerStyle={{ padding: spacing.lg, gap: spacing.md }}
+      style={{ backgroundColor: c.bg }}>
+      <RowBetween>
+        <Title>Zen mode</Title>
+        <Pill label={zenActive ? 'active' : 'idle'} on={zenActive} />
+      </RowBetween>
+      <Hint>
+        During the window only the apps you allow stay usable — everything else is suspended.
+        Keeps the phone "basic" so mornings don't start on a scroll.
+      </Hint>
 
-      <View style={styles.card}>
-        <View style={styles.rowBetween}>
-          <Text style={styles.label}>Enable schedule</Text>
-          <Switch value={isActive} onValueChange={setIsActive} />
-        </View>
-        <Text style={styles.hint}>
-          When on, Zen engages automatically during the window below.
-        </Text>
-      </View>
+      <Card>
+        <RowBetween>
+          <SectionLabel>Enable schedule</SectionLabel>
+          <Switch
+            value={isActive}
+            onValueChange={setIsActive}
+            trackColor={{ false: c.fillMuted, true: c.fill }}
+            thumbColor={c.surface}
+          />
+        </RowBetween>
+        <Hint>When on, Zen engages automatically during the window below.</Hint>
+      </Card>
 
-      <View style={styles.card}>
-        <View style={styles.timeRow}>
-          <View style={styles.timeField}>
-            <Text style={styles.label}>Start</Text>
+      <Card>
+        <Row>
+          <View style={{ flex: 1, gap: spacing.xs }}>
+            <SectionLabel>Start</SectionLabel>
             <TextInput
-              style={styles.input}
+              style={input}
               value={startText}
               onChangeText={setStartText}
               placeholder="23:00"
+              placeholderTextColor={c.textFaint}
               keyboardType="numbers-and-punctuation"
             />
           </View>
-          <View style={styles.timeField}>
-            <Text style={styles.label}>End</Text>
+          <View style={{ flex: 1, gap: spacing.xs }}>
+            <SectionLabel>End</SectionLabel>
             <TextInput
-              style={styles.input}
+              style={input}
               value={endText}
               onChangeText={setEndText}
               placeholder="09:00"
+              placeholderTextColor={c.textFaint}
               keyboardType="numbers-and-punctuation"
             />
           </View>
-        </View>
-        <Text style={styles.hint}>24-hour HH:MM. End before start = crosses midnight.</Text>
-      </View>
+        </Row>
+        <Hint>24-hour HH:MM. End before start = crosses midnight.</Hint>
+      </Card>
 
-      <View style={styles.card}>
-        <Text style={styles.label}>Days (none = every day)</Text>
-        <View style={styles.daysRow}>
+      <Card>
+        <SectionLabel>Days (none = every day)</SectionLabel>
+        <Row style={{ flexWrap: 'wrap' }}>
           {DAY_LABELS.map((lbl, idx) => {
             const on = days.has(idx);
             return (
               <Pressable
                 key={idx}
                 onPress={() => toggleDay(idx)}
-                style={[styles.dayChip, on && styles.dayChipOn]}>
-                <Text style={[styles.dayText, on && styles.dayTextOn]}>{lbl}</Text>
+                style={{
+                  width: 38,
+                  height: 38,
+                  borderRadius: radius.pill,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderWidth: StyleSheet.hairlineWidth,
+                  borderColor: on ? c.fill : c.border,
+                  backgroundColor: on ? c.fill : 'transparent',
+                }}>
+                <Text style={{ fontWeight: '700', color: on ? c.onFill : c.textMuted }}>
+                  {lbl}
+                </Text>
               </Pressable>
             );
           })}
-        </View>
-      </View>
+        </Row>
+      </Card>
 
-      <View style={styles.card}>
-        <View style={styles.rowBetween}>
-          <View style={{ flex: 1, paddingRight: 8 }}>
-            <Text style={styles.label}>Allow browser</Text>
-            <Text style={styles.hint}>Off = the browser is blocked too (recommended).</Text>
+      <Card>
+        <RowBetween>
+          <View style={{ flex: 1, paddingRight: spacing.sm }}>
+            <SectionLabel>Allow browser</SectionLabel>
+            <Hint>Off = the browser is blocked too (recommended).</Hint>
           </View>
-          <Switch value={allowBrowser} onValueChange={setAllowBrowser} />
-        </View>
-      </View>
+          <Switch
+            value={allowBrowser}
+            onValueChange={setAllowBrowser}
+            trackColor={{ false: c.fillMuted, true: c.fill }}
+            thumbColor={c.surface}
+          />
+        </RowBetween>
+      </Card>
 
-      <View style={styles.card}>
-        <Text style={styles.label}>Allowlist ({allowedCount} selected)</Text>
-        <Text style={styles.hint}>
-          Pick the apps that stay usable (calls, messages, camera, etc.).
-        </Text>
-        {loadingApps && <ActivityIndicator style={{ marginVertical: 8 }} />}
+      <Card>
+        <SectionLabel>Allowlist ({allowed.size} selected)</SectionLabel>
+        <Hint>Pick the apps that stay usable — calls, messages, camera, etc.</Hint>
+        {loadingApps && <ActivityIndicator color={c.textMuted} style={{ marginVertical: spacing.sm }} />}
         <FlatList
           data={apps}
           scrollEnabled={false}
@@ -289,116 +312,34 @@ export function ZenScreen({ onError }: Props) {
             const on = allowed.has(item.packageName);
             return (
               <Pressable
-                style={styles.appRow}
-                onPress={() => toggleAllowed(item.packageName)}>
-                <Text style={[styles.check, on ? styles.checkOn : styles.checkOff]}>
-                  {on ? '☑' : '☐'}
+                onPress={() => toggleAllowed(item.packageName)}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: spacing.md,
+                  paddingVertical: 10,
+                  borderBottomWidth: StyleSheet.hairlineWidth,
+                  borderBottomColor: c.border,
+                }}>
+                <Text style={{ fontSize: 18, color: on ? c.text : c.textFaint }}>
+                  {on ? '◉' : '○'}
                 </Text>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.appName}>{item.appName}</Text>
-                  <Text style={styles.appPkg}>{item.packageName}</Text>
+                  <Body style={{ fontWeight: '500' }}>{item.appName}</Body>
+                  <Mono>{item.packageName}</Mono>
                 </View>
               </Pressable>
             );
           }}
         />
-      </View>
+      </Card>
 
-      <Pressable
-        style={[styles.button, styles.primary, saving && styles.disabled]}
-        onPress={handleSave}
-        disabled={saving}>
-        {saving ? (
-          <ActivityIndicator color="white" />
-        ) : (
-          <Text style={styles.buttonText}>Save schedule</Text>
-        )}
-      </Pressable>
-
-      <View style={styles.row}>
-        <Pressable style={[styles.button, styles.test]} onPress={handleTestStart}>
-          <Text style={styles.buttonText}>Test: start 1 min</Text>
-        </Pressable>
-        <Pressable style={[styles.button, styles.secondary]} onPress={handleTestEnd}>
-          <Text style={styles.buttonText}>End now</Text>
-        </Pressable>
-      </View>
-
-      <Pressable style={[styles.button, styles.danger]} onPress={handleClear}>
-        <Text style={styles.buttonText}>Clear schedule</Text>
-      </Pressable>
+      <Button label="Save schedule" onPress={handleSave} busy={saving} />
+      <Row>
+        <Button label="Test: start 1 min" variant="ghost" onPress={handleTestStart} />
+        <Button label="End now" variant="ghost" onPress={handleTestEnd} />
+      </Row>
+      <Button label="Clear schedule" variant="danger" onPress={handleClear} />
     </ScrollView>
   );
 }
-
-const styles = StyleSheet.create({
-  content: { padding: 16, gap: 12 },
-  headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  title: { fontSize: 18, fontWeight: '600' },
-  hint: { fontSize: 13, color: '#555' },
-  card: { backgroundColor: 'white', padding: 14, borderRadius: 10, gap: 8 },
-  label: { fontSize: 12, color: '#666', textTransform: 'uppercase' },
-  row: { flexDirection: 'row', gap: 8 },
-  rowBetween: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  timeRow: { flexDirection: 'row', gap: 12 },
-  timeField: { flex: 1, gap: 6 },
-  input: {
-    borderWidth: 1,
-    borderColor: '#d1d5db',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 16,
-    fontFamily: 'Menlo',
-    backgroundColor: '#fafafa',
-  },
-  daysRow: { flexDirection: 'row', gap: 6, flexWrap: 'wrap' },
-  dayChip: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#e5e5ea',
-  },
-  dayChipOn: { backgroundColor: '#2b6ef2' },
-  dayText: { fontSize: 14, fontWeight: '600', color: '#555' },
-  dayTextOn: { color: 'white' },
-  appRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingVertical: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#eee',
-  },
-  check: { fontSize: 20 },
-  checkOn: { color: '#1e8e3e' },
-  checkOff: { color: '#aaa' },
-  appName: { fontSize: 15, fontWeight: '500' },
-  appPkg: { fontSize: 11, color: '#888', fontFamily: 'Menlo' },
-  button: {
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: 8,
-    alignItems: 'center',
-    flex: 1,
-  },
-  primary: { backgroundColor: '#2b6ef2' },
-  secondary: { backgroundColor: '#6b7280' },
-  test: { backgroundColor: '#1e8e3e' },
-  danger: { backgroundColor: '#d93025' },
-  disabled: { opacity: 0.6 },
-  buttonText: { color: 'white', fontWeight: '600' },
-  pill: {
-    fontSize: 11,
-    fontWeight: '700',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 10,
-    overflow: 'hidden',
-    textTransform: 'uppercase',
-  },
-  pillOn: { backgroundColor: '#1e8e3e', color: 'white' },
-  pillOff: { backgroundColor: '#e5e5ea', color: '#555' },
-});
