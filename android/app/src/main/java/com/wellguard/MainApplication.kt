@@ -10,6 +10,7 @@ import com.wellguard.modules.DevicePolicyPackage
 import com.wellguard.modules.SmsPackage
 import com.wellguard.modules.TimerServicePackage
 import com.wellguard.modules.UsageStatsPackage
+import com.wellguard.modules.ZenPackage
 
 class MainApplication : Application(), ReactApplication {
 
@@ -22,6 +23,7 @@ class MainApplication : Application(), ReactApplication {
           add(TimerServicePackage())
           add(UsageStatsPackage())
           add(SmsPackage())
+          add(ZenPackage())
         },
     )
   }

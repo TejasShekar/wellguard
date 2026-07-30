@@ -41,6 +41,8 @@ class TimerForegroundService : Service() {
   private lateinit var dpm: DevicePolicyManager
   private lateinit var alarmManager: AlarmManager
   private lateinit var adminComponent: ComponentName
+  private lateinit var zenController: ZenController
+  private lateinit var zenScheduleStore: ZenScheduleStore
 
   override fun onCreate() {
     super.onCreate()
@@ -48,6 +50,8 @@ class TimerForegroundService : Service() {
     dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
     alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
     adminComponent = ComponentName(this, DeviceAdminReceiver::class.java)
+    zenController = ZenController(this)
+    zenScheduleStore = ZenScheduleStore(this)
     ensureChannel()
   }
 
@@ -69,15 +73,26 @@ class TimerForegroundService : Service() {
       }
       ACTION_STOP -> if (packageName != null) stopCycle(packageName)
       ACTION_TRANSITION -> if (packageName != null) onPhaseTransition(packageName)
-      ACTION_RESUME -> resumeAllFromStore()
+      ACTION_RESUME -> {
+        resumeAllFromStore()
+        zenArm()
+      }
+      ACTION_ZEN_ARM -> zenArm()
+      ACTION_ZEN_START -> zenStart()
+      ACTION_ZEN_END -> zenEnd()
+      ACTION_ZEN_START_NOW ->
+        zenStartNow(
+          intent?.getDoubleExtra(EXTRA_DURATION_MINUTES, DEFAULT_ZEN_NOW_MIN)
+            ?: DEFAULT_ZEN_NOW_MIN
+        )
     }
 
     refreshNotification()
 
-    // If no active cycles remain, let the service exit — foreground service should
-    // not linger with no work.
-    if (store.allActive().isEmpty()) {
-      Log.i(TAG, "no active cycles, stopping self")
+    // Let the service exit only if there is genuinely no work: no active cycles
+    // AND no active Zen session. A future-armed Zen start alarm will restart us.
+    if (store.allActive().isEmpty() && !zenController.isActive()) {
+      Log.i(TAG, "no active cycles or Zen, stopping self")
       stopForeground(STOP_FOREGROUND_REMOVE)
       stopSelf()
     }
@@ -165,6 +180,106 @@ class TimerForegroundService : Service() {
         scheduleNextTransition(state)
       }
     }
+  }
+
+  // ----- Zen mode -----
+
+  /**
+   * (Re)arm Zen from the persisted schedule. Called after JS updates the
+   * schedule and on boot. Engages immediately if we're inside a window now,
+   * always (re)schedules the next start alarm.
+   */
+  private fun zenArm() {
+    val schedule = zenScheduleStore.load()
+    if (schedule == null || !schedule.isActive) {
+      if (zenController.isActive()) zenController.disengage()
+      cancelZenAlarms()
+      Log.i(TAG, "zenArm: no active schedule; cleared")
+      return
+    }
+    val now = System.currentTimeMillis()
+    if (ZenTime.isWithinWindow(schedule, now)) {
+      val ends = ZenTime.sessionEndMillis(schedule, now)
+      zenController.engage(schedule, ends)
+      armZenEnd(ends)
+    } else if (zenController.isActive()) {
+      // Stale session left over from a schedule change — end it.
+      zenController.disengage()
+    }
+    armZenStart(ZenTime.nextStartMillis(schedule, now))
+  }
+
+  /** Window-start alarm fired (or Handler equivalent). Engage if truly within. */
+  private fun zenStart() {
+    val schedule = zenScheduleStore.load() ?: return
+    if (!schedule.isActive) return
+    val now = System.currentTimeMillis()
+    if (ZenTime.isWithinWindow(schedule, now)) {
+      val ends = ZenTime.sessionEndMillis(schedule, now)
+      zenController.engage(schedule, ends)
+      armZenEnd(ends)
+    }
+    // Re-arm for the next occurrence.
+    armZenStart(ZenTime.nextStartMillis(schedule, now))
+  }
+
+  /** Window-end alarm fired, or AP/manual early-exit. Disengage + arm next start. */
+  private fun zenEnd() {
+    zenController.disengage()
+    val schedule = zenScheduleStore.load()
+    if (schedule != null && schedule.isActive) {
+      armZenStart(ZenTime.nextStartMillis(schedule, System.currentTimeMillis()))
+    }
+  }
+
+  /** Manual/test engage for a fixed duration using the current schedule's allowlist. */
+  private fun zenStartNow(durationMinutes: Double) {
+    val schedule = zenScheduleStore.load() ?: run {
+      Log.w(TAG, "zenStartNow: no schedule saved (need an allowlist)")
+      return
+    }
+    val now = System.currentTimeMillis()
+    val ends = now + (durationMinutes * MS_PER_MINUTE).toLong()
+    zenController.engage(schedule, ends)
+    armZenEnd(ends)
+  }
+
+  private fun armZenStart(at: Long) {
+    val pi = zenPendingIntent(ACTION_ZEN_START, ZEN_START_REQ)
+    scheduleExactAlarm(at, pi)
+    Log.i(TAG, "armZenStart at=$at")
+  }
+
+  private fun armZenEnd(at: Long) {
+    val pi = zenPendingIntent(ACTION_ZEN_END, ZEN_END_REQ)
+    scheduleExactAlarm(at, pi)
+    Log.i(TAG, "armZenEnd at=$at")
+  }
+
+  private fun cancelZenAlarms() {
+    alarmManager.cancel(zenPendingIntent(ACTION_ZEN_START, ZEN_START_REQ))
+    alarmManager.cancel(zenPendingIntent(ACTION_ZEN_END, ZEN_END_REQ))
+  }
+
+  private fun scheduleExactAlarm(at: Long, pi: PendingIntent) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !alarmManager.canScheduleExactAlarms()) {
+      alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+    } else {
+      alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+    }
+  }
+
+  private fun zenPendingIntent(action: String, requestCode: Int): PendingIntent {
+    val intent = Intent(this, TimerForegroundService::class.java).apply {
+      this.action = action
+      putExtra(EXTRA_ACTION, action)
+    }
+    return PendingIntent.getService(
+      this,
+      requestCode,
+      intent,
+      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
   }
 
   // ----- Side effects -----
@@ -294,7 +409,10 @@ class TimerForegroundService : Service() {
 
   private fun refreshNotification() {
     val active = store.allActive()
+    val zenActive = zenController.isActive()
     val body = when {
+      zenActive && active.isEmpty() -> "Zen mode active"
+      zenActive -> "Zen active · ${active.size} cycle(s)"
       active.isEmpty() -> "Idle"
       active.size == 1 -> {
         val s = active.first()
@@ -327,15 +445,23 @@ class TimerForegroundService : Service() {
     private const val WARNING_LEAD_MS = 10_000L
     private const val DEFAULT_USE_MIN = 10.0
     private const val DEFAULT_FREEZE_MIN = 60.0
+    private const val DEFAULT_ZEN_NOW_MIN = 1.0
+    private const val ZEN_START_REQ = 7001
+    private const val ZEN_END_REQ = 7002
 
     const val EXTRA_ACTION = "action"
     const val EXTRA_PACKAGE_NAME = "packageName"
     const val EXTRA_USE_MINUTES = "useMinutes"
     const val EXTRA_FREEZE_MINUTES = "freezeMinutes"
+    const val EXTRA_DURATION_MINUTES = "durationMinutes"
 
     const val ACTION_START = "start"
     const val ACTION_STOP = "stop"
     const val ACTION_TRANSITION = "transition"
     const val ACTION_RESUME = "resume"
+    const val ACTION_ZEN_ARM = "zen_arm"
+    const val ACTION_ZEN_START = "zen_start"
+    const val ACTION_ZEN_END = "zen_end"
+    const val ACTION_ZEN_START_NOW = "zen_start_now"
   }
 }

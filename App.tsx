@@ -28,6 +28,7 @@ import DevicePolicy from './src/modules/DevicePolicy';
 import type { InstalledApp } from './src/modules/DevicePolicy';
 import TimerService from './src/modules/TimerService';
 import UsageStats from './src/modules/UsageStats';
+import { ZenScreen } from './src/screens/ZenScreen';
 import {
   useAppConfigStore,
   type AppConfig,
@@ -90,6 +91,7 @@ function App() {
   const [gate, setGate] = useState<Gate>(INITIAL_GATE);
   const [gateLoaded, setGateLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [zenOpen, setZenOpen] = useState(false);
 
   const refreshGate = useCallback(async () => {
     setError(null);
@@ -185,7 +187,16 @@ function App() {
             />
           )}
 
-          {gatePassed && <GuardList onError={setError} />}
+          {gatePassed && (
+            <>
+              <GuardList onError={setError} />
+              <Pressable
+                style={[styles.button, styles.zenEntry]}
+                onPress={() => setZenOpen(true)}>
+                <Text style={styles.buttonText}>Zen mode →</Text>
+              </Pressable>
+            </>
+          )}
 
           {error && (
             <View style={[styles.card, styles.errorCard]}>
@@ -194,6 +205,22 @@ function App() {
             </View>
           )}
         </ScrollView>
+
+        <Modal
+          visible={zenOpen}
+          animationType="slide"
+          onRequestClose={() => setZenOpen(false)}
+          presentationStyle="pageSheet">
+          <SafeAreaView style={styles.container}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.title}>Zen mode</Text>
+              <Pressable onPress={() => setZenOpen(false)}>
+                <Text style={styles.cancelText}>Close</Text>
+              </Pressable>
+            </View>
+            <ZenScreen onError={setError} />
+          </SafeAreaView>
+        </Modal>
       </SafeAreaView>
     </SafeAreaProvider>
   );
@@ -782,6 +809,7 @@ const styles = StyleSheet.create({
   },
   prereqList: { gap: 2, marginBottom: 4 },
   prereqItem: { fontSize: 13, color: '#555' },
+  zenEntry: { marginTop: 8, backgroundColor: '#6d28d9' },
 });
 
 export default App;
