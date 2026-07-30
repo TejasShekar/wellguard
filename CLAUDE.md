@@ -24,6 +24,25 @@ You are assisting a **lead frontend engineer** (React, TypeScript, Next.js, Redu
 
 ---
 
+## v1 MVP Scope (2026-07-29 pivot)
+WellGuard is being shipped as a **public, open-source MVP** (license: **GPL-3.0**). This section is the source of truth for what v1 includes; the rest of this document describes the *full eventual vision*, not all of which ships in v1.
+
+**v1 SHIPS:**
+- Core cycle engine (use/freeze per app, survives reboot/Doze) — done
+- Permission gate / onboarding (Device Owner, notifications, usage access, battery-opt) — done
+- Per-app config + installed-app picker — done
+- **Zen mode** (allowlist morning-block) — the headline showcase feature
+- Presentable UI (real screens via navigation), branding, GPL-3.0 LICENSE, public README
+
+**v1 CUTS / DEFERS to v2+:**
+- **Accountability Partner (entire feature)** — no Firebase, no auth, no backend in v1. The "survives uninstall" story holds via Device Owner alone. Offline **TOTP-based** accountability is the planned v2 approach (Firebase rejected for OSS: every forker would need their own Firebase project). Firebase auth scaffolding is preserved on branch `feature/firebase-auth`.
+- **AccessibilityService fallback** (no-ADB weaker mode) — v1 is **Device Owner only**; embraces the ADB setup barrier and targets technical early adopters.
+- Usage dashboards / Victory charts, companion PWA, WhatsApp fallback.
+
+> Consequence for v1: no emergency-unblock-via-AP and no AP-gated config changes. The user configures freely; enforcement strength comes purely from Device Owner (can't uninstall) + the friction of the cycle. AP-gated hardening returns in v2 via TOTP.
+
+---
+
 ## Target Platform
 - **Android only** (personal use, sideloaded — not Play Store)
 - Minimum SDK: Android 10 (API 29)
@@ -255,6 +274,35 @@ interface AccountabilityPartner {
 }
 ```
 
+### ZenSchedule (Firestore + local MMKV)
+The recurring rule that defines a Zen window. See **Zen Mode** under Key Behaviors.
+```typescript
+interface ZenSchedule {
+  id: string;
+  userId: string;
+  label: string;             // e.g. "Morning focus"
+  startMinuteOfDay: number;  // local minutes since midnight, e.g. 1380 = 23:00
+  endMinuteOfDay: number;    // e.g. 540 = 09:00. May be < start → window crosses midnight
+  daysOfWeek: number[];      // 0=Sun .. 6=Sat; [] means every day
+  allowedPackages: string[]; // the allowlist (dialer, messages, camera, voice recorder…)
+  allowBrowser: boolean;     // default false; when true, default browser pkg joins the allowlist
+  isActive: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+```
+
+### ZenState (local — native store only, must survive process death)
+In-flight state for an *active* Zen session. Written by the native service, mirrors `CycleState`'s storage approach (Kotlin-owned, read on resume/boot).
+```typescript
+interface ZenState {
+  scheduleId: string;
+  sessionStartedAt: number;  // unix ms
+  sessionEndsAt: number;     // unix ms — concrete end of THIS session (midnight-wrap resolved)
+  suspendedByZen: string[];  // EXACTLY what Zen suspended — restore precisely on exit
+}
+```
+
 ---
 
 ## Key Behaviors & Rules
@@ -307,6 +355,24 @@ fun startCycle(packageName: String) {
 4. AP receives notification via: FCM first → if undelivered after 120s → SMS via SmsModule
 5. WellGuard **removal requires AP approval** — 30 min expiry window
 6. If Device Owner is lost without an approved RemovalRequest, AP is notified immediately as a breach alert
+
+### Zen Mode (Allowlist Morning-Block)
+A scheduled window during which the phone drops to **basic mode**: only an explicit **allowlist** of apps stays usable, everything else is suspended. Motivating use case: prevent first-thing-in-the-morning doomscrolling — e.g. keep the phone "basic" from 23:00 until 09:00 so the user is forced to start the day on something else.
+
+> **Allowlist inversion.** The cycle engine suspends a small named set. Zen does the opposite: it suspends `installedLaunchableApps − allowlist`. Same primitive (`DevicePolicyManager.setPackagesSuspended`), inverted input set. This is the key conceptual difference from per-app cycles.
+
+**Default allowlist intent:** calls, SMS, camera, voice recorder. The user **picks the actual packages during setup** — they are *not* hardcoded, because package names vary by OEM (e.g. `com.google.android.dialer` on Pixel). Browser is a separate `allowBrowser` toggle, **default off** — URL-level "limited browsing" is explicitly **out of scope for v1** (would require a VPN/DNS content filter).
+
+**Safety net:** DPM refuses to suspend system-critical packages (emergency dialer, SystemUI, Settings) and returns them in its failed-to-suspend list. An over-aggressive allowlist therefore *cannot* brick the phone — emergency calling always survives.
+
+#### Zen Rules
+1. **Enforcement is native.** A Zen controller in the foreground service (sibling to the cycle logic) computes the suspend set and toggles DPM. The JS layer only *configures* the `ZenSchedule` (schedule + allowlist) — it is never on the enforcement path. If JS is dead, Zen still engages and disengages on time.
+2. **Schedule-driven via AlarmManager.** Zen start and Zen end are each an `AlarmManager.setExactAndAllowWhileIdle` alarm, re-armed daily and on `BOOT_COMPLETED` (same Doze-safe pattern as cycle transitions). The in-process `Handler` is the primary; the alarm is the Doze fallback.
+3. **Midnight-crossing windows.** When `endMinuteOfDay < startMinuteOfDay` the window spans midnight. Active-check is `now ≥ start OR now < end`, not `start ≤ now < end`. `ZenState.sessionEndsAt` stores the concrete resolved end timestamp so the service never re-derives the wrap at runtime.
+4. **Interaction with cycle engine — Zen is a superset, not a replacement.** During a Zen window, Zen suspends everything outside the allowlist (which usually *includes* apps that have their own cycles). On Zen end, the controller does **not** blanket-unsuspend: it restores each app in `suspendedByZen` to whatever the cycle store says its current phase requires (an app mid-FREEZE stays suspended). This is why `ZenState.suspendedByZen` records exactly what Zen touched.
+5. **No per-app emergency unblock during Zen.** The escape hatch is removed by design — an unblock would defeat the purpose. The *only* early exit is the AP ending the entire Zen session (rule 6).
+6. **AP can end an active Zen session early** via a single approval (reuses the unblock-request notification chain: FCM → SMS fallback). This grants exactly one thing: terminate the current session. The next scheduled window still engages normally.
+7. **Changing a `ZenSchedule` requires AP approval**, identical to AppConfig changes (AP Approval Rule 1). The user cannot weaken their own Zen schedule impulsively.
 
 ### Onboarding (Critical Path)
 The app **will not function** without Device Owner mode. Onboarding must:
@@ -560,6 +626,18 @@ The user has an Android work profile managed by their employer. **This conflicts
 - [ ] AP invite flow — generate invite link, AP accepts via web
 - [ ] Emergency unblock request flow — sends FCM to AP, SMS fallback
 
+### Phase 1.5 — Zen Mode (Allowlist Morning-Block)
+> Placed after Phase 1 (not in Phase 3) because Zen is a **core enforcement mode**, not polish — and its "AP ends session early" + "schedule change needs approval" rules reuse the AP-approval + notification infra built in Milestone 1E. Building it before AP exists would mean building half of AP anyway.
+- [ ] `ZenSchedule` data model + Firestore sync + local store (mirror AppConfig sync strategy)
+- [ ] Setup UI — pick allowlist apps (reuse installed-app picker), set start/end time + days, `allowBrowser` toggle
+- [ ] Native Zen controller in the foreground service — compute `installedLaunchable − allowlist`, suspend via DPM, record `suspendedByZen`
+- [ ] AlarmManager start/end alarms, re-armed daily + on `BOOT_COMPLETED` (Doze-safe, mirrors cycle transitions)
+- [ ] Midnight-crossing window handling + `ZenState.sessionEndsAt` resolution
+- [ ] On Zen-end, restore each app to its cycle-store phase (not blanket-unsuspend)
+- [ ] AP approval to change a `ZenSchedule`; AP can end an active session early
+- [ ] **VALIDATE: Does a 1-min test Zen window suspend all non-allowlisted apps and restore correctly on exit?**
+- [ ] **VALIDATE: Does Zen survive reboot mid-window (BootReceiver re-arms the end alarm)?**
+
 ### Phase 2 — Insights + AP Companion
 - [ ] Usage dashboard with Victory Native charts
 - [ ] Habit streaks per app
@@ -567,7 +645,7 @@ The user has an Android work profile managed by their employer. **This conflicts
 - [ ] AP companion PWA (React, Firebase Hosting)
 
 ### Phase 3 — Polish
-- [ ] Focus profiles
+- [ ] Focus profiles — *multiple named* `ZenSchedule`s the user swaps between (work hours / weekend / sleep). Builds on the Phase 1.5 Zen foundation; v1 ships a single schedule.
 - [ ] Multi-AP support
 - [ ] WhatsApp deep link fallback
 
