@@ -125,7 +125,7 @@ Release builds do not export this service.
 
 ## Contributing
 
-Issues and PRs welcome. This is early alpha — expect rough edges and moving APIs. Architecture, data models, and build order live in [`CLAUDE.md`](./CLAUDE.md).
+Issues and PRs welcome. This is early alpha — expect rough edges and moving APIs. Architecture, data models, and build order live in [`CLAUDE.md`](./CLAUDE.md). Maintainer release steps (signing, building the APK, cutting a GitHub Release) are in [`RELEASING.md`](./RELEASING.md).
 
 ## License
 
