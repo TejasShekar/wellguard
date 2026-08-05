@@ -41,6 +41,8 @@ WellGuard is being shipped as a **public, open-source MVP** (license: **GPL-3.0*
 
 > Consequence for v1: no emergency-unblock-via-AP and no AP-gated config changes. The user configures freely; enforcement strength comes purely from Device Owner (can't uninstall) + the friction of the cycle. AP-gated hardening returns in v2 via TOTP.
 
+> **Current state, open problems, and v2 design notes live in [`ROADMAP.md`](./ROADMAP.md)** — read it before planning new work. It records what's validated vs. merely built, why Firebase was rejected, the unsolved dead-end problem in the TOTP design, and the naming candidates already ruled out.
+
 ---
 
 ## Target Platform

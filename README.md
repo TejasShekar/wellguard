@@ -27,8 +27,10 @@ WellGuard runs as an Android **Device Owner** (set once over ADB). That privileg
 **In this alpha:** the cycle engine, Zen mode, the permission/onboarding flow, and a minimal light/dark UI.
 
 **Planned (v2):**
-- **Accountability partner** — schedule changes and emergency unblocks gated behind approval from a trusted person, fully offline via TOTP (no backend required).
+- **Accountability** — schedule changes and emergency unblocks put behind either a long non-cancellable cooling-off delay or approval from a trusted person via offline TOTP. No backend either way.
 - Usage insights, an AccessibilityService fallback for devices where Device Owner can't be set, and multi-schedule "focus profiles".
+
+Design notes, rejected alternatives, and the reasoning behind all of the above are in [`ROADMAP.md`](./ROADMAP.md).
 
 ---
 
@@ -125,7 +127,13 @@ Release builds do not export this service.
 
 ## Contributing
 
-Issues and PRs welcome. This is early alpha — expect rough edges and moving APIs. Architecture, data models, and build order live in [`CLAUDE.md`](./CLAUDE.md). Maintainer release steps (signing, building the APK, cutting a GitHub Release) are in [`RELEASING.md`](./RELEASING.md).
+Issues and PRs welcome. This is early alpha — expect rough edges and moving APIs.
+
+- Architecture, data models, and build order — [`CLAUDE.md`](./CLAUDE.md)
+- Roadmap, design decisions, known gaps, and open problems — [`ROADMAP.md`](./ROADMAP.md)
+- Maintainer release steps (signing, building the APK, cutting a GitHub Release) — [`RELEASING.md`](./RELEASING.md)
+
+**Best place to help right now:** WellGuard's foreground service has only been tested on an emulator. If you can run it on a real OnePlus, Xiaomi, or Samsung device and report whether cycles survive aggressive battery optimization, that's the most valuable contribution available.
 
 ## License
 
